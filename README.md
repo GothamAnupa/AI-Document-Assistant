@@ -1,4 +1,4 @@
-# 🏫 Academic RAG AI Assistant
+# 🏫  AI Document Assistant
 
 A production-grade, modular Retrieval-Augmented Generation (RAG) system designed to provide factual, high-speed responses to student queries regarding curriculum, exam schedules, and academic calendars.
 
