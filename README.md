@@ -55,3 +55,4 @@ Built to help students quickly find answers about:
 
 - The app answers only from indexed sources.
 - It is designed mainly for student and academic use cases.
+- Streamlit Cloud uses a disabled file watcher to avoid transformer import noise.

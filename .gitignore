@@ -2,4 +2,5 @@
 .venv/ 
 db/ 
 __pycache__/ 
-.streamlit/ 
+.streamlit/*
+!.streamlit/config.toml
