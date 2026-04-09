@@ -1,21 +1,21 @@
 import csv
 import io
+import json
 import re
 import shutil
 import tempfile
-import time
 import zipfile
-from urllib.parse import urlparse
 from pathlib import Path
+from urllib.parse import urlparse
 from xml.etree import ElementTree as ET
 
+import numpy as np
 import requests
 from bs4 import BeautifulSoup
-from langchain_chroma import Chroma
 from langchain_core.documents import Document
-from langchain_community.document_loaders import PyPDFLoader, TextLoader
-from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from sentence_transformers import SentenceTransformer
 
 from src.config import ACTIVE_DB_FILE, DB_ROOT, DEFAULT_DB_DIR, EMBED_MODEL, TOP_K
 
@@ -29,7 +29,13 @@ BROWSER_HEADERS = {
 
 
 def get_embeddings():
-    return HuggingFaceEmbeddings(model_name=EMBED_MODEL)
+    return SentenceTransformer(EMBED_MODEL)
+
+
+def _embed_texts(texts):
+    model = get_embeddings()
+    vectors = model.encode(texts, normalize_embeddings=True)
+    return np.asarray(vectors, dtype=np.float32)
 
 
 def clear_knowledge_base():
@@ -207,6 +213,10 @@ def _get_active_db_dir():
     return DEFAULT_DB_DIR
 
 
+def _store_path(db_dir: Path):
+    return db_dir / "store.json"
+
+
 def build_vector_db(documents, replace_existing=True):
     if not documents:
         return 0
@@ -215,18 +225,28 @@ def build_vector_db(documents, replace_existing=True):
         shutil.rmtree(DB_ROOT, ignore_errors=True)
 
     db_dir = DB_ROOT / (
-        f"session_{int(time.time() * 1000)}" if replace_existing else "current"
+        "current"
+        if replace_existing
+        else f"session_{abs(hash(tuple(d.page_content[:32] for d in documents))) % 10**12}"
     )
     db_dir.mkdir(parents=True, exist_ok=True)
 
     splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
     chunks = splitter.split_documents(documents)
+    texts = [chunk.page_content for chunk in chunks]
+    vectors = _embed_texts(texts)
 
-    Chroma.from_documents(
-        documents=chunks,
-        embedding=get_embeddings(),
-        persist_directory=str(db_dir),
-    )
+    payload = []
+    for idx, chunk in enumerate(chunks):
+        payload.append(
+            {
+                "page_content": chunk.page_content,
+                "metadata": chunk.metadata,
+                "vector": vectors[idx].tolist(),
+            }
+        )
+
+    _store_path(db_dir).write_text(json.dumps(payload), encoding="utf-8")
     _set_active_db_dir(db_dir)
     return len(chunks)
 
@@ -238,23 +258,42 @@ def ingest_sources(uploaded_files, url_text, replace_existing=True):
     return build_vector_db(documents, replace_existing=replace_existing)
 
 
+class SimpleRetriever:
+    def __init__(self, docs, vectors, top_k=TOP_K):
+        self.docs = docs
+        self.vectors = vectors
+        self.top_k = top_k
+
+    def invoke(self, query):
+        if not self.docs:
+            return []
+        query_vec = _embed_texts([query])[0]
+        sims = self.vectors @ query_vec
+        order = np.argsort(-sims)[: self.top_k]
+        return [self.docs[i] for i in order if float(sims[i]) > 0.15]
+
+
 def get_vectorstore():
     db_dir = _get_active_db_dir()
-    if not db_dir.exists():
+    store_file = _store_path(db_dir)
+    if not store_file.exists():
         return None
     try:
-        return Chroma(
-            persist_directory=str(db_dir), embedding_function=get_embeddings()
-        )
+        payload = json.loads(store_file.read_text(encoding="utf-8"))
+        docs = [
+            Document(
+                page_content=item["page_content"], metadata=item.get("metadata", {})
+            )
+            for item in payload
+        ]
+        vectors = np.asarray([item["vector"] for item in payload], dtype=np.float32)
+        return SimpleRetriever(docs, vectors, top_k=TOP_K)
     except Exception:
         return None
 
 
 def get_retriever():
-    store = get_vectorstore()
-    if store is None:
-        return None
-    return store.as_retriever(search_kwargs={"k": TOP_K})
+    return get_vectorstore()
 
 
 def unique_sources(documents):
