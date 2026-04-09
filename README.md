@@ -1,41 +1,57 @@
-# 🏫  AI Document Assistant
+# Student Document Assistant
 
-A production-grade, modular Retrieval-Augmented Generation (RAG) system designed to provide factual, high-speed responses to student queries regarding curriculum, exam schedules, and academic calendars.
+An AI-powered RAG app for students to ask factual questions from documents and college/school websites.
 
-## 🚀 Technical Highlights
-- **High-Speed Inference:** Powered by **Groq LPU** (Llama 3.1 8B) for sub-second response latency.
-- **Privacy-First Embeddings:** Uses local **HuggingFace (all-MiniLM-L6-v2)** embeddings to ensure data privacy and zero API costs for vectorization.
-- **Hallucination Control:** Implements strict RAG logic to ensure responses are grounded only in verified school documentation.
-- **Automated Audit:** Includes a dedicated evaluation suite using the **RAGAS framework** to measure system accuracy.
+## Purpose
 
-## 📂 Modular Architecture
-The project is built using a decoupled, modular design to ensure scalability and maintainability:
-- `src/loader.py`: Document parsing and data loading.
-- `src/splitter.py`: Recursive character splitting with contextual overlap (1000/150).
-- `src/embedder.py`: Local vector embedding initialization.
-- `src/database.py`: Vector persistence and retrieval logic via **ChromaDB**.
-- `src/guardrails.py`: Security layer for input sanitization and output redaction.
+Built to help students quickly find answers about:
+- notes and study material
+- notices and circulars
+- exam schedules and results
+- admissions and course details
+- college and school websites
 
-## 🛡️ Security & AI Safety (Guardrails)
-This project implements a multi-layered security firewall to protect the LLM and the user:
-- **Prompt Injection Defense:** Detects and blocks adversarial instructions (e.g., "Ignore previous rules").
-- **PII Redaction:** Scans AI responses for sensitive data (e.g., phone numbers) using Regex-based pattern matching.
-- **Topic Filtering:** Restricts the bot to academic domains, blocking queries related to restricted or dangerous topics.
-- **Input Validation:** Limits query length to prevent token-exhaustion attacks.
+## Features
 
-## 📊 Performance Evaluation (RAGAS)
-I implemented an automated evaluation suite (`evaluate.py`) that uses **Llama 3.3 70B** as a "Judge" to score the system across three key metrics:
-- **Faithfulness:** Measures if the answer is factually supported by the retrieved context (Zero Hallucination).
-- **Answer Relevancy:** Measures how well the AI response addresses the user's specific query.
-- **Context Precision:** Measures the quality of the vector search retrieval from the database.
-*Results are automatically logged to `evaluation_report.csv` for continuous monitoring.*
+- Upload `.txt`, `.md`, `.log`, `.csv`, `.pdf`, and `.docx` files
+- Paste website links and query their content
+- Ask follow-up questions in chat
+- Get answers backed by source references
+- Reset or rebuild the knowledge base anytime
 
-## 🛠️ Setup Instructions
+## How It Works
 
-1.Clone & Install:
-2.pip install -r requirements.txt
-3.Create a .env file with your GROQ_API_KEY.
-4.Run ingestion: python ingest_main.py.
-5.Run Evaluation (Optional - Audits the system accuracy using RAGAS)
-'python evaluate.py'
-6.Start the bot: streamlit run app.py.
+1. You upload files or paste links.
+2. The app extracts text and splits it into chunks.
+3. Chunks are stored in a vector database.
+4. Your question is matched against the indexed content.
+5. The model answers using only the retrieved context.
+
+## Project Structure
+
+- `app.py` - Streamlit UI and chat flow
+- `src/knowledge.py` - loading, scraping, chunking, and retrieval
+- `src/guardrails.py` - basic input/output safety checks
+- `src/config.py` - model and storage settings
+
+## Run Locally
+
+1. `pip install -r requirements.txt`
+2. Create `.env` and set `GROQ_API_KEY=...`
+3. `streamlit run app.py`
+
+## Usage
+
+1. Add documents or links in the sidebar.
+2. Click `Build knowledge base`.
+3. Ask a question in the chat box.
+
+## Supported Sources
+
+- Local documents: `.txt`, `.md`, `.log`, `.csv`, `.pdf`, `.docx`
+- Web pages from pasted URLs
+
+## Notes
+
+- The app answers only from indexed sources.
+- It is designed mainly for student and academic use cases.

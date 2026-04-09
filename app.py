@@ -1,127 +1,273 @@
-import streamlit as st
 import os
-import sys
+
+import streamlit as st
 from dotenv import load_dotenv
-
-# 1. Load environment variables from .env file
-load_dotenv()
-
-# 2. Tell Python where to find the 'src' folder
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '.')))
-
-# 3. LangChain & Modular Imports
-from langchain_groq import ChatGroq
-from langchain_chroma import Chroma
-from langchain.chains import create_retrieval_chain
-from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.prompts import ChatPromptTemplate
-from src.config import DB_DIR, GROQ_MODEL
-from src.embedder import get_embedding_model
+from langchain_groq import ChatGroq
+
+from src.config import DB_ROOT, GROQ_MODEL
 from src.guardrails import check_input_safety, check_output_safety
+from src.knowledge import (
+    clear_knowledge_base,
+    get_retriever,
+    ingest_sources,
+    unique_sources,
+)
 
-# --- PAGE CONFIGURATION ---
-st.set_page_config(page_title="School AI Assistant", page_icon="🏫", layout="centered")
 
-# --- CUSTOM CSS FOR BETTER UI ---
-st.markdown("""
+load_dotenv()
+os.environ.setdefault("USER_AGENT", "AI-Document-Assistant/1.0")
+
+st.set_page_config(
+    page_title="Student Document Assistant", page_icon="📘", layout="centered"
+)
+
+st.markdown(
+    """
     <style>
-    .main-header { font-size: 36px; font-weight: bold; color: #1E3A8A; text-align: center; }
-    .sub-header { font-size: 18px; color: #4B5563; text-align: center; margin-bottom: 30px; }
-    .stApp { background-color: #f8fafc; }
+    .stApp {
+        background: linear-gradient(180deg, #f8fbff 0%, #eef4ff 100%);
+    }
+    .title {
+        font-size: 2.3rem;
+        font-weight: 800;
+        text-align: center;
+        color: #16324f;
+        margin-top: 0.5rem;
+    }
+    .subtitle {
+        text-align: center;
+        color: #52616b;
+        margin-bottom: 1.25rem;
+    }
     </style>
-    """, unsafe_allow_html=True)
+    """,
+    unsafe_allow_html=True,
+)
 
-# --- BACKEND INITIALIZATION ---
+
 @st.cache_resource
-def init_rag_system():
-    # Fetch key from .env
-    api_key = os.getenv("GROQ_API_KEY")
-    if not api_key:
-        st.error("❌ API Key not found in .env file!")
-        st.stop()
+def get_llm():
+    key = os.getenv("GROQ_API_KEY")
+    if not key:
+        return None
+    return ChatGroq(api_key=key, model_name=GROQ_MODEL, temperature=0)
 
-    # Load local vector database
-    embeddings = get_embedding_model()
-    vectorstore = Chroma(persist_directory=DB_DIR, embedding_function=embeddings)
-    retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
 
-    # Setup LLM (Groq)
-    llm = ChatGroq(api_key=api_key, model_name=GROQ_MODEL, temperature=0)
+def get_recent_history(limit=6):
+    return st.session_state.messages[-limit:]
 
-    # Define the System Instructions
-    system_prompt = (
-        "You are the official School AI Assistant. "
-        "Use the provided context to answer questions accurately and politely. "
-        "If the answer is not in the context, say you don't know."
-        "\n\nContext: {context}"
+
+def resolve_query(user_query):
+    lowered = user_query.lower().strip()
+    followup_markers = [
+        "it",
+        "this",
+        "that",
+        "they",
+        "them",
+        "whose",
+        "whom",
+        "which",
+        "refers",
+        "refer to",
+        "what about",
+    ]
+    if len(lowered.split()) <= 5 or any(
+        marker in lowered for marker in followup_markers
+    ):
+        previous_user = next(
+            (
+                msg["content"]
+                for msg in reversed(st.session_state.messages)
+                if msg["role"] == "user"
+            ),
+            "",
+        )
+        if previous_user:
+            return f"{user_query}\n\nPrevious question: {previous_user}"
+    return user_query
+
+
+def build_answer(llm, question, context, sources, history_text=""):
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            (
+                "system",
+                "You are a factual RAG assistant for students. "
+                "Focus on school and college documents, notices, exam details, course information, admissions, and campus links. "
+                "Answer only from the provided context. If the answer is missing, say you don't know. "
+                "Use the recent conversation history to resolve follow-up questions. "
+                "Keep the answer concise.",
+            ),
+            (
+                "human",
+                "Recent conversation:\n{history}\n\nQuestion: {question}\n\nContext:\n{context}\n\nSources:\n{sources}",
+            ),
+        ]
+    )
+    result = llm.invoke(
+        prompt.format_messages(
+            question=question, context=context, sources=sources, history=history_text
+        )
+    ).content
+    return check_output_safety(result)
+
+
+def ensure_retriever(uploaded_files, link_text, replace_existing):
+    retriever = get_retriever()
+    if retriever is not None:
+        return retriever
+
+    if not uploaded_files and not (link_text or "").strip():
+        return None
+
+    count = ingest_sources(uploaded_files, link_text, replace_existing)
+    if count:
+        st.toast(f"Indexed {count} chunks", icon="✅")
+        return get_retriever()
+    return None
+
+
+def extract_institution_items(docs):
+    for doc in docs:
+        if (doc.metadata or {}).get("page_type") == "institutions":
+            items = [
+                line.strip()
+                for line in doc.page_content.splitlines()
+                if line.strip() and line.strip().lower() != "view"
+            ]
+            return items, (doc.metadata or {}).get("item_count")
+    return [], None
+
+
+def is_count_question(text):
+    lowered = text.lower()
+    return any(
+        word in lowered for word in ["how many", "number", "count", "so many", "total"]
     )
 
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", system_prompt),
-        ("human", "{input}")
-    ])
 
-    # Build the RAG Chain
-    combine_docs_chain = create_stuff_documents_chain(llm, prompt)
-    return create_retrieval_chain(retriever, combine_docs_chain)
+def is_list_question(text):
+    lowered = text.lower()
+    return any(
+        word in lowered
+        for word in ["what are", "which are", "mention", "mentioned", "list"]
+    )
 
-# Initialize the system
-try:
-    rag_chain = init_rag_system()
-except Exception as e:
-    st.error(f"Failed to load system: {e}")
-    st.stop()
 
-# --- MAIN UI ---
-st.markdown('<p class="main-header">🏫 School AI Assistant</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-header">Your 24/7 Guide for Syllabus, Exams & Holidays</p>', unsafe_allow_html=True)
+st.markdown('<div class="title">AI Document Assistant</div>', unsafe_allow_html=True)
+st.markdown(
+    '<div class="subtitle">Student-focused Q&A from notes, notices, and college links</div>',
+    unsafe_allow_html=True,
+)
 
-# Initialize Chat History
 if "messages" not in st.session_state:
     st.session_state.messages = [
-        {"role": "assistant", "content": "Hello! I'm your school assistant. How can I help you today?"}
+        {
+            "role": "assistant",
+            "content": "Upload documents or paste links in the sidebar, then ask a question.",
+        }
     ]
 
-# Display Chat History
+with st.sidebar:
+    st.header("Knowledge Base")
+    uploaded_files = st.file_uploader(
+        "Upload files", accept_multiple_files=True, type=None
+    )
+    link_text = st.text_area(
+        "Paste URLs", height=120, placeholder="https://example.com"
+    )
+    replace_existing = st.checkbox("Replace existing knowledge base", value=True)
+
+    if st.button("Build knowledge base"):
+        with st.spinner("Indexing your sources..."):
+            count = ingest_sources(uploaded_files, link_text, replace_existing)
+        if count:
+            st.success(f"Indexed {count} chunks.")
+            st.rerun()
+        else:
+            st.warning("No readable documents or links were provided.")
+
+    if st.button("Reset knowledge base"):
+        clear_knowledge_base()
+        st.success("Knowledge base cleared.")
+        st.rerun()
+
+    st.caption(f"DB root: {DB_ROOT}")
+
+llm = get_llm()
+if llm is None:
+    st.warning("Add `GROQ_API_KEY` to `.env` to enable chat.")
+    st.stop()
+
 for message in st.session_state.messages:
     avatar = "👨‍🎓" if message["role"] == "user" else "🏫"
     with st.chat_message(message["role"], avatar=avatar):
         st.markdown(message["content"])
 
-# User Input Logic
-if user_query := st.chat_input("Ask me about the curriculum..."):
-    
-    # --- 1. GUARDRAIL: INPUT CHECK ---
-    is_safe, security_msg = check_input_safety(user_query)
-    
-    if not is_safe:
+if user_query := st.chat_input("Ask about your documents..."):
+    safe, reason = check_input_safety(user_query)
+    if not safe:
         with st.chat_message("assistant", avatar="🛡️"):
-            st.error(security_msg)
-    else:
-        # Show user message
-        st.session_state.messages.append({"role": "user", "content": user_query})
-        with st.chat_message("user", avatar="👨‍🎓"):
-            st.markdown(user_query)
+            st.error(reason)
+        st.stop()
 
-        # Generate AI Response
-        with st.chat_message("assistant", avatar="🏫"):
-            with st.spinner("Searching school records..."):
-                try:
-                    response = rag_chain.invoke({"input": user_query})
-                    answer = response["answer"]
-                    
-                    # --- 2. GUARDRAIL: OUTPUT CHECK ---
-                    final_answer = check_output_safety(answer)
-                    
-                    st.markdown(final_answer)
-                    st.session_state.messages.append({"role": "assistant", "content": final_answer})
-                except Exception as e:
-                    st.error(f"Error generating response: {e}")
+    st.session_state.messages.append({"role": "user", "content": user_query})
+    with st.chat_message("user", avatar="👨‍🎓"):
+        st.markdown(user_query)
 
-# Sidebar Info
-with st.sidebar:
-    st.title("Settings")
-    if st.button("🗑️ Clear Chat"):
-        st.session_state.messages = []
-        st.rerun()
-    st.info("This assistant uses RAG technology to provide factual school data.")
+    with st.chat_message("assistant", avatar="🏫"):
+        with st.spinner("Searching sources..."):
+            retriever = ensure_retriever(uploaded_files, link_text, replace_existing)
+            resolved_query = resolve_query(user_query)
+            docs = retriever.invoke(resolved_query) if retriever else []
+            if not docs:
+                answer = "I don't know based on the indexed documents and links."
+            else:
+                handled = False
+                institution_items, item_count = extract_institution_items(docs)
+                if institution_items and (
+                    is_count_question(user_query)
+                    or is_list_question(user_query)
+                    or "institution" in user_query.lower()
+                ):
+                    count_value = item_count or len(institution_items)
+                    if is_count_question(user_query):
+                        answer = f"There are {count_value} institutions mentioned in the link."
+                    else:
+                        answer = "The institutions mentioned are:\n" + "\n".join(
+                            f"- {item}" for item in institution_items
+                        )
+                    sources = unique_sources(docs)
+                    source_text = (
+                        "\n".join(f"- {source}" for source in sources)
+                        if sources
+                        else "- Indexed sources"
+                    )
+                    answer = f"{answer}\n\nSources:\n{source_text}"
+                    st.markdown(answer)
+                    st.session_state.messages.append(
+                        {"role": "assistant", "content": answer}
+                    )
+                    handled = True
+
+                if not handled:
+                    context = "\n\n".join(doc.page_content for doc in docs)
+                    sources = unique_sources(docs)
+                    history_text = "\n".join(
+                        f"{msg['role'].title()}: {msg['content']}"
+                        for msg in get_recent_history()
+                    )
+                    source_text = (
+                        "\n".join(f"- {source}" for source in sources)
+                        if sources
+                        else "- Indexed sources"
+                    )
+                    answer = build_answer(
+                        llm, user_query, context, source_text, history_text=history_text
+                    )
+                    answer = f"{answer}\n\nSources:\n{source_text}"
+
+            st.markdown(answer)
+            st.session_state.messages.append({"role": "assistant", "content": answer})
