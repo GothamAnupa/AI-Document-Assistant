@@ -1,4 +1,4 @@
-# Student Document Assistant
+# AI Document Assistant
 
 An AI-powered RAG app for students to ask factual questions from documents and college/school websites.
 

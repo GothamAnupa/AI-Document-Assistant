@@ -1,5 +1,5 @@
 [project]
-name = "anu"
+name = "ai-document-assistant"
 version = "0.1.0"
 description = "AI document assistant"
 readme = "README.md"

@@ -19,7 +19,7 @@ load_dotenv()
 os.environ.setdefault("USER_AGENT", "AI-Document-Assistant/1.0")
 
 st.set_page_config(
-    page_title="Student Document Assistant", page_icon="📘", layout="centered"
+    page_title="AI Document Assistant", page_icon="📘", layout="centered"
 )
 
 st.markdown(
